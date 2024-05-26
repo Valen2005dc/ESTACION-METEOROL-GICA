@@ -1,0 +1,279 @@
+#include <stm32f.h>
+#include <I2c.h>
+#include "Ssd1306.h"
+#include "Usart.h"
+#include "math.h"
+#include "Adc.h"
+#include "BMP280.h"
+#include "Timer.h"
+#include "Pwm.h"
+
+/*
+ADC A0
+USART RX A12;;;TX A11
+I2C SCL B8;;;; SDA B9
+C0 hall
+*/
+
+int delay=0,conteo=0,subida;
+I2c I;
+SSD1306 G;
+Usart U;
+Adc A;
+int luz;
+float LUZ,rpm;
+long promedio;
+char Textooo[50]="a",Texto[50],Test[30]="Okkk",Sensor1[17]="Sensor ok",Sensor2[17]="Sensor no ok";
+char P_ASCII[500];
+double TEMPERATURA,PRESION,Altura,a,b; //Valor final
+	unsigned short dig_T1,dig_P1;
+	short dig_T2,dig_T3,dig_P2,dig_P3,dig_P4,dig_P5,dig_P6,dig_P7,dig_P8,dig_P9;
+	int32_t Presion=0,Temperture=0,t_fine; //Representa adc_T
+	int16_t P1,P2,P3,Tem1,Tem2,Tem3;
+	unsigned char prueba=0;
+	unsigned char G1,G2,G3,T1,T2,T3;
+	unsigned char buffer[10]={0};
+	unsigned char bufferG1[10]={0},bufferG2[10]={0},bufferG3[10]={0};
+	unsigned char bufferT1[10]={0},bufferT2[10]={0},bufferT3[10]={0};
+void ConfigurarPin(GPIO_TypeDef *p,int pin,unsigned char moder, unsigned char pupdr=0){
+RCC->AHB1ENR |= 0x07;
+p->MODER &= ~(3UL<<2*pin); // leer 1
+p->MODER |= ((moder&3)<<2*pin);//Setea los pines siguiendo lo mismo que pasa en 1
+p->PUPDR &= ~(3UL<<2*pin); //Funciona igual que el moder ya que cambia 2 bits
+p->PUPDR |= ((pupdr&3)<<2*pin);
+};
+
+extern "C"{//SysTick
+void SysTick_Handler(void){
+	//Rutina del SysTick
+		conteo++;
+		rpm=(subida/3)*60;
+		if(conteo==1){conteo=0; subida=0;}
+	}
+	void EXTI0_IRQHandler(void){  
+	EXTI->PR|=(1UL<<0);  
+	subida++;
+}
+
+}
+void delay(int time){//delay en milisegundos
+for(int n1=0;n1<time;n1++)__ASM("NOP");
+}
+
+void TestSensor(){
+	I.TxI2C(0xEC,0xD0);
+	prueba=I.RxI2C(0xED);
+}
+void ConfiguracionSensor(){
+	//Control medidas
+	buffer[0]=0xF4; //
+	buffer[1]=0x6F; //Resolucion Temp y Presion; Modo de operacion.
+	I.TxI2C(0xEC,buffer,2);
+	delay(300);
+	//Configuracion
+	buffer[0]=0xF5; //Configuracion Tiempo y filtro
+	buffer[1]=0x48; //Tiempo en 125ms y factor filtro 4
+	I.TxI2C(0xEC,buffer,2);
+	
+}
+
+void GuardadoPresion(){
+	G1=0xF7;
+	G2=0xF8;
+	G3=0xF9;
+	I.TxI2C(0xEC,G1); //Primer registro de guardado
+	I.RxI2C(0xED,bufferG1,1);	//Lee 8 bits de info
+	I.TxI2C(0xEC,G2); //Segundo registro de guardado
+	I.RxI2C(0xED,bufferG2,1);	//Lee 8 bits de info
+	I.TxI2C(0xEC,G3); //Tercero registro de guardado
+	I.RxI2C(0xED,bufferG3,1);	//Lee 4 bits de info
+	//Concadena los 2 bytes para obtener todo el valor de las aceleraciones
+	P1=(bufferG1[0]); //Mas significativo
+	P2=(bufferG2[0]);//Medio
+	P3=(bufferG3[0]);//Menor
+	Presion=(P1<<12|P2<<4|P3);
+
+}
+
+void GuardadoTemperatura(){
+	T1=0xFA;
+	T2=0xFB;
+	T3=0xFC;
+	I.TxI2C(0xEC,T1); //Primer registro de guardado
+	I.RxI2C(0xED,bufferT1,1);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,T2); //Segundo registro de guardado
+	I.RxI2C(0xED,bufferT2,1);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,T3); //Tercero registro de guardado
+	I.RxI2C(0xED,bufferT3,1);	//Lee 4 bits de info, medio byte
+	//Concadena los 2 bytes para obtener todo el valor de las aceleraciones
+	Tem1=(bufferT1[0]); //Mas significativo
+	Tem2=(bufferT2[0]);//Medio
+	Tem3=(bufferT3[0]);//Menor
+	Temperture=(Tem1<<12|Tem2<<4|Tem3);
+}
+void GuardadoVariables(){
+		//dig_T1
+	I.TxI2C(0xEC,0x88); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x89); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_T1=buffer[1]<<8|buffer[0];
+	delay(2000);
+	//dig_T2
+	I.TxI2C(0xEC,0x8A); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x8B); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_T2=buffer[1]<<8|buffer[0];
+	delay(2000);
+	//dig_T3
+	I.TxI2C(0xEC,0x8C); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x8D); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_T3=buffer[1]<<8|buffer[0];
+	delay(2000);
+	//dig_P1
+	I.TxI2C(0xEC,0x8E); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x8F); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P1=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P2
+	I.TxI2C(0xEC,0x90); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x91); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P2=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P3
+	I.TxI2C(0xEC,0x92); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x93); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P3=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P4
+	I.TxI2C(0xEC,0x94); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x95); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P4=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P5
+	I.TxI2C(0xEC,0x96); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x97); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P5=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P6
+	I.TxI2C(0xEC,0x98); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x99); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P6=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P7
+	I.TxI2C(0xEC,0x9A); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x9B); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P7=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P8
+	I.TxI2C(0xEC,0x9C); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x9D); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P8=buffer[1]<<8|buffer[0];
+	delay(2000);
+		//dig_P9
+	I.TxI2C(0xEC,0x9E); //Primer registro de guardado
+	buffer[0]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	I.TxI2C(0xEC,0x9F); //Primer registro de guardado
+	buffer[1]=I.RxI2C(0xED);	//Lee 8 bits de info, 1 byte
+	dig_P9=buffer[1]<<8|buffer[0];
+	delay(2000);
+	
+}
+double DatoPresion(int32_t Pre){
+	double var1,var2,p;
+	var1=((double)t_fine/2.0)-64000.0;
+	var2=var1*var1*((double)dig_P6)/32768.0;
+	var2=var2+var1*((double)dig_P5)*2.0;
+	var2=(var2/4.0)+(((double)dig_P4)*65536.0);
+	var1=(((double)dig_P3)*var1*var1/524288.0+((double)dig_P2)*var1)/524288.0;
+	var1=(1.0+var1/32768.0)*((double)dig_P1);
+	if(var1==0.0) return 0; //No hay division por 0
+	p=1048576.0-(double)Pre;
+	p=(p-(var2/4096.0))*6250.0/var1;
+	var1=((double)dig_P9)*p*p/2147483648.0;
+	var2=p*((double)dig_P8)/32768.0;
+	p=p+(var1+var2+((double)dig_P7))/16.0;
+	return p;
+}
+double DatoTemperatura(int32_t temper){
+	double var1,var2,T;
+	var1=(((double)temper)/16384.0 - ((double)dig_T1)/1024.0)*((double)dig_T2);
+	var2=((((double)temper)/131072.0 - ((double)dig_T1)/8192.0)*
+		(((double)temper)/131072.0 - ((double)dig_T1)/8192.0))*((double)dig_T3);
+	t_fine=(int32_t)(var1+var2);
+	T=(var1+var2)/5120.0;
+	return T;
+}
+
+
+
+int main(void)
+{
+	SystemCoreClockUpdate();
+	SysTick_Config(SystemCoreClock); //El systick esta contando cada 1 s
+	//Interrupcion
+	RCC->APB2ENR|=RCC_APB2ENR_SYSCFGEN; //Activa SYSCFG  
+	ConfigurarPin(GPIOC,0,0);
+	SYSCFG->EXTICR[0]= 2UL;
+	EXTI->RTSR=1UL;
+	EXTI->IMR=1UL;
+	NVIC_EnableIRQ(EXTI0_IRQn); // Activa vector de interrupción  
+	//Usart, I2C y ADC inicio
+	I.Iniciar(400000);
+	U.Iniciar(PA12,PA11);
+	A.SetAdc(1);
+	A.AnalogoPin(AP0);
+	A.RegularGroup(0);
+	delay(50000);
+	U=Test;
+	delay(50000);
+	if(I.TestId(0xEC))
+	{
+		U=Sensor1;
+	}else{
+		U=Sensor2;
+	}
+	delay(50000);
+	TestSensor();
+	sprintf(Texto,"Test: %d  \n\r",prueba);
+	U=Texto;
+	delay(50000);
+	ConfiguracionSensor();
+	GuardadoVariables();
+while(1)
+{
+	luz=A.GetRegularData();
+	LUZ=(luz*3.3)/4095;
+	LUZ=((100*LUZ/3.3));
+	GuardadoPresion();
+	GuardadoTemperatura();
+	TEMPERATURA=DatoTemperatura(Temperture);
+	PRESION=DatoPresion(Presion);
+	a=PRESION/101325;
+	b=(0.0065*287.05)/9.80665;
+	Altura=(288.15/0.0065)*(1-pow(a,b));
+	sprintf(P_ASCII, "Altura: % 0.2f m ;; Temperatura: % 0.2f Celcius ;; Luz: %f porciento ;; RPM: %f \n\r",Altura,TEMPERATURA,LUZ,rpm);
+	U=P_ASCII;
+	delay(1000000);
+}
+return 0;	
+}
